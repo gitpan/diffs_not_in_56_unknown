@@ -1,0 +1,112 @@
+diff -pru perl5.004_01.malloc/mg.c perl5.004_01.sigs/mg.c
+--- perl5.004_01.malloc/mg.c	Fri Jun 13 06:14:02 1997
++++ perl5.004_01.sigs/mg.c	Wed Jul  2 01:30:32 1997
+@@ -1664,6 +1664,19 @@ char *sig;
+     return 0;
+ }
+ 
++static void
++unwind_handler_stack(p)
++    void *p;
++{
++    U32 flags = (U32)p;
++    
++    if (flags & 1)
++	savestack_ix -= 5; /* Unprotect save in progress. */
++/*    if (flags & 2) 
++	cxstack_ix--; */		/* Not needed, die already
++					   unwound it. */
++}
++
+ Signal_t
+ sighandler(sig)
+ int sig;
+@@ -1674,11 +1687,38 @@ int sig;
+     SV *sv;
+     CV *cv;
+     AV *oldstack;
+-
++    OP *myop = op;
++    U32 flags = 0;
++    
++    if (savestack_ix + 15 <= savestack_max)
++	flags |= 1;
++    if (cxstack_ix < cxstack_max - 1)
++	flags |= 2;
++    if (markstack_ptr < markstack_max - 2)
++	flags |= 4;
++    if (retstack_ix < retstack_max - 2)
++	flags |= 8;
++
++    if (flags & 2) {
++	CONTEXT *cx;
++
++	cxstack_ix++;			/* Protect from overwrite. */
++	cx = &cxstack[cxstack_ix];
++	cx->cx_type = CXt_NULL;		/* Make it safe for unwind. */
++    }
+     if (!psig_ptr[sig])
+ 	die("Signal SIG%s received, but no signal handler set.\n",
+ 	    sig_name[sig]);
+ 
++    /* Max number of items pushed there is 3*n or 4. We cannot fix
++       infinity, so we fix 4 (in fact 5): */
++    if (flags & 1) 
++	savestack_ix += 5;		/* Protect save in progress. */
++    if (flags & 4) 
++	markstack_ptr++;		/* Protect mark. */
++    if (flags & 8) 
++	retstack_ix++;
++
+     cv = sv_2cv(psig_ptr[sig],&st,&gv,TRUE);
+     if (!cv || !CvROOT(cv)) {
+ 	if (dowarn)
+@@ -1701,10 +1741,22 @@ int sig;
+     PUSHMARK(sp);
+     PUSHs(sv);
+     PUTBACK;
++    if (flags & 1) {
++	SAVEDESTRUCTOR(unwind_handler_stack, (void*)flags);
++    }
+ 
+     perl_call_sv((SV*)cv, G_DISCARD);
+ 
+     SWITCHSTACK(signalstack, oldstack);
+-
++    if (flags & 1)
++	savestack_ix -= 5; /* Unprotect save in progress. */
++    if (flags & 2) 
++	cxstack_ix--;
++    if (flags & 4) 
++	markstack_ptr--;
++    if (flags & 8) 
++	retstack_ix--;
++/*    op = myop;*/			/* Somehow makes things worse... */
++    
+     return;
+ }
+diff -pru perl5.004_01.malloc/t/op/magic.t perl5.004_01.sigs/t/op/magic.t
+--- perl5.004_01.malloc/t/op/magic.t	Thu Jun 12 04:33:10 1997
++++ perl5.004_01.sigs/t/op/magic.t	Wed Jul  2 01:14:20 1997
+@@ -23,7 +23,7 @@ $Is_MSWin32 = $^O eq 'MSWin32';
+ $Is_VMS     = $^O eq 'VMS';
+ $PERL = ($Is_MSWin32 ? '.\perl' : './perl');
+ 
+-print "1..30\n";
++print "1..31\n";
+ 
+ eval '$ENV{"foo"} = "hi there";';	# check that ENV is inited inside eval
+ if ($Is_MSWin32) { ok 1, `cmd /x /c set foo` eq "foo=hi there\n"; }
+@@ -162,3 +162,12 @@ else {
+ 						: (`echo \$NoNeSuCh` eq "foo\n") );
+ }
+ 
++$c = 5; 
++$d = 0;
++$SIG{ALRM} = sub {die}; 
++eval {
++  alarm 1;
++  sleep 20;
++}, $d++ while $c--;
++
++ok 31, $d == 5;

@@ -1,0 +1,20 @@
+diff -pru perl5.004_01.ini/perl.c perl5.004_01/perl.c
+--- perl5.004_01.ini/perl.c	Mon Jun  9 16:52:04 1997
++++ perl5.004_01/perl.c	Fri Jul 18 19:21:38 1997
+@@ -1008,7 +1008,7 @@ perl_call_sv(sv, flags)
+ SV* sv;
+ I32 flags;		/* See G_* flags in cop.h */
+ {
+-    LOGOP myop;		/* fake syntax tree node */
++    LOGOP myop,omop;		/* fake syntax tree node */
+     SV** sp = stack_sp;
+     I32 oldmark;
+     I32 retval;
+@@ -1023,6 +1023,7 @@ I32 flags;		/* See G_* flags in cop.h */
+ 	SAVETMPS;
+     }
+ 
++omop=myop;
+     Zero(&myop, 1, LOGOP);
+     myop.op_next = Nullop;
+     if (!(flags & G_NOARGS))

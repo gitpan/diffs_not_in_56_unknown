@@ -1,0 +1,210 @@
+--- op.h~	Mon Dec 16 14:35:36 1996
++++ op.h	Tue Jan 14 22:05:00 1997
+@@ -91,6 +91,10 @@
+ #define OPpDEREF_HV		64	/*   Want ref to HV. */
+ #define OPpDEREF_SV		(32|64)	/*   Want ref to SV. */
+ 
++/* Private for OPs with TARGET except OP_ENTERSUB */
++  /* (lower bits may carry MAXARG) */
++#define OPpTARGET_MY		16	/* Target is PADMY. */
++
+ /* Private for OP_CONST */
+ #define OPpCONST_ENTERED	16	/* Has been entered as symbol. */
+ #define OPpCONST_ARYBASE	32	/* Was a $[ translated to constant. */
+--- pp.h~	Tue Dec 24 07:50:32 1996
++++ pp.h	Wed Jan 15 18:40:18 1997
+@@ -143,7 +143,8 @@
+ #define RETSETUNDEF	RETURNX(SETs(&sv_undef))
+ 
+ #define ARGTARG		op->op_targ
+-#define MAXARG		op->op_private
++    /* See OPpTARGET_MY: */
++#define MAXARG		(op->op_private & 15)
+ 
+ #define SWITCHSTACK(f,t)	AvFILL(f) = sp - stack_base;		\
+ 				stack_base = AvARRAY(t);		\
+@@ -202,7 +203,8 @@
+ 
+ #define opASSIGN (op->op_flags & OPf_STACKED)
+ #define SETsv(sv)	STMT_START {					\
+-		if (opASSIGN) { sv_setsv(TARG, (sv)); SETTARG; }	\
++		if (opASSIGN || (SvFLAGS(TARG) & SVs_PADMY))		\
++		   { sv_setsv(TARG, (sv)); SETTARG; }			\
+ 		else SETs(sv); } STMT_END
+ 
+ /* newSVsv does not behave as advertised, so we copy missing
+--- global.sym~	Sat Jan 11 10:22:44 1997
++++ global.sym	Thu Jan 16 01:56:00 1997
+@@ -351,6 +351,7 @@
+ ck_retarget
+ ck_rfun
+ ck_rvconst
++ck_sassign
+ ck_scmp
+ ck_select
+ ck_shift
+--- H:/get/perl/perl5.003_17.my/opcode.pl	Mon Dec 16 09:32:30 1996
++++ opcode.pl	Tue Jan 14 00:47:02 1997
+@@ -239,7 +239,7 @@
+ 
+ # Lvalue operators.
+ 
+-sassign		scalar assignment	ck_null		s
++sassign		scalar assignment	ck_sassign	s
+ aassign		list assignment		ck_null		t	L L
+ 
+ chop		chop			ck_spair	mts	L
+--- ../perl5.003_17/op.c	Thu Dec 26 10:58:10 1996
++++ op.c	Wed Jan 15 03:18:28 1997
+@@ -635,6 +635,9 @@
+     if (op->op_flags & OPf_LIST)
+ 	return op;
+ 
++    if ((op->op_private & OPpTARGET_MY) && (op->op_type != OP_ENTERSUB))
++	return scalar(op);
++
+     op->op_flags |= OPf_KNOW;
+ 
+     switch (op->op_type) {
+@@ -825,6 +828,9 @@
+ 	 || error_count)
+ 	return op;
+ 
++    if ((op->op_private & OPpTARGET_MY) && (op->op_type != OP_ENTERSUB))
++	return scalar(op);
++
+     op->op_flags |= (OPf_KNOW | OPf_LIST);
+ 
+     switch (op->op_type) {
+@@ -923,6 +929,9 @@
+     if (!op || error_count)
+ 	return op;
+ 
++    if ((op->op_private & OPpTARGET_MY) && (op->op_type != OP_ENTERSUB))
++	return op;
++    
+     switch (op->op_type) {
+     case OP_CONST:
+ 	if (!(op->op_private & (OPpCONST_ARYBASE)))
+@@ -1406,7 +1415,7 @@
+ 
+     if (opargs[type] & OA_RETSCALAR)
+ 	scalar(o);
+-    if (opargs[type] & OA_TARGET)
++    if (opargs[type] & OA_TARGET && !o->op_targ)
+ 	o->op_targ = pad_alloc(type, SVs_PADTMP);
+ 
+     if ((opargs[type] & OA_OTHERINT) && (hints & HINT_INTEGER))
+@@ -1761,7 +1770,7 @@
+     }
+ 
+     binop = (BINOP*)CHECKOP(type, binop);
+-    if (binop->op_next)
++    if (binop->op_next || binop->op_type != type)
+ 	return (OP*)binop;
+ 
+     binop->op_last = last = binop->op_first->op_sibling;
+@@ -3892,6 +3901,77 @@
+ }
+ 
+ OP *
++ck_sassign(op)
++OP *op;
++{
++    OP *kid = cLISTOP->op_first;
++    if ((opargs[kid->op_type] & OA_TARGET)
++	&& !(kid->op_flags & OPf_STACKED)) { /* has a disposable target. */
++	/* Some opcodes do not ALWAYS set target even in scalar context. */
++	OP *kkid = kid->op_sibling;
++	switch (kid->op_type) {
++	case OP_ENTERSUB:		/* Cannot use OPpTARGET_MY. */
++ 	case OP_REF:			/* Will not set if undef. */
++	case OP_UCFIRST:		/* These 4 do not set TARG if
++					   arg is PADTMP. */
++	case OP_LCFIRST:
++	case OP_UC:
++	case OP_LC:
++	case OP_CALLER:			/* Will not set if undef. */
++	case OP_WARN:			/* Will not set ever? */
++	case OP_OPEN:			/* Will not set if undef. */
++	case OP_FILENO:			/* Will not set if undef. */
++#ifndef HAS_SYMLINK
++	case OP_READLINK:		/* Will not set undef. */
++#endif 
++	case OP_SEMCTL:			/* Will not set if undef. */
++	case OP_SHMCTL:			/* Will not set if undef. */
++	case OP_MSGCTL:			/* Will not set if undef. */
++	case OP_GMTIME:			/* Will not set if undef. */
++	case OP_TELLDIR:		/* Will not set if undef. */
++	case OP_ACCEPT:			/* Will not set if undef. */
++	case OP_SHUTDOWN:		/* Will not set if undef. */
++	case OP_IOCTL:			/* Will not set if undef. */
++	case OP_SYSREAD:		/* Will not set if undef. */
++	case OP_RECV:			/* Will not set if undef. */
++	case OP_SYSWRITE:		/* Will not set if undef. */
++	case OP_SEND:			/* Will not set if undef. */
++	case OP_EACH:			/* Will not set if undef. */
++	case OP_POS:			/* Will not set if undef. */
++	case OP_RV2AV:			/* Will not set if undef. */
++	case OP_RV2HV:			/* Will not set if undef. */
++	case OP_BACKTICK:		/* Will not set if undef. */
++	case OP_SPLIT:			/* Will not set often. */
++	    return op;
++	}
++	if (kkid && kkid->op_type == OP_PADSV) { /* Can just relocate the target. */
++	    /* Concat has problems if target is equal to right arg. */
++	    if (kid->op_type == OP_CONCAT
++		&& kLISTOP->op_first->op_sibling->op_type == OP_PADSV
++		&& kLISTOP->op_first->op_sibling->op_targ == kkid->op_targ)
++		return op;
++	    kid->op_targ = kkid->op_targ;
++	    /* Now we do not need PADSV and SASSIGN. */
++	    kid->op_sibling = op->op_sibling;/* NULL */
++	    cLISTOP->op_first = NULL;
++	    op_free(op);
++	    op_free(kkid);
++	    switch (kid->op_type) {
++	    default:
++		kid->op_private |= OPpTARGET_MY; /* Not used. */
++		break;
++	    case OP_PADSV:
++	    case OP_PADAV:
++	    case OP_PADHV:
++		break;
++	    }
++	    return kid;
++	}
++    }
++    return op;
++}
++
++OP *
+ ck_listiob(op)
+ OP *op;
+ {
+@@ -4342,8 +4422,24 @@
+ 	case OP_LC:
+ 	case OP_LCFIRST:
+ 	case OP_QUOTEMETA:
+-	    if (o->op_next->op_type == OP_STRINGIFY)
++	    if (o->op_next->op_type == OP_STRINGIFY) {
++		if (o->op_next->op_private & OPpTARGET_MY) {
++		    if ((o->op_type == OP_CONST) /* no target */
++			|| (o->op_flags & OPf_STACKED) /* chained concats */
++			|| (o->op_type == OP_CONCAT
++	    /* Concat has problems if target is equal to right arg. */
++			    && (((LISTOP*)o)->op_first->op_sibling->op_type
++				== OP_PADSV)
++			    && (((LISTOP*)o)->op_first->op_sibling->op_targ
++				== o->op_next->op_targ))) {
++			goto ignore_optimization;
++		    } else {
++			o->op_targ = o->op_next->op_targ;
++		    }
++		}
+ 		null(o->op_next);
++	    }
++	  ignore_optimization:
+ 	    o->op_seq = op_seqmax++;
+ 	    break;
+ 	case OP_STUB:

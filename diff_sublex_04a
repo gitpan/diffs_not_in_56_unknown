@@ -1,0 +1,26 @@
+--- ./toke.c~	Tue May 13 11:07:02 1997
++++ ./toke.c	Wed Oct 15 17:57:42 1997
+@@ -247,6 +247,11 @@ SV *line;
+     SAVEPPTR(lex_brackstack);
+     SAVEPPTR(lex_casestack);
+     SAVEDESTRUCTOR(restore_rsfp, rsfp);
++    SAVESPTR(lex_stuff);
++    /* These guys can be excessive, but to be on the safe side... */
++    SAVEI32(lex_defer);
++    /* SAVEI32(expect); */		/* How to save an enum expectation? */
++    SAVESPTR(lex_repl);
+ 
+     lex_state = LEX_NORMAL;
+     lex_defer = 0;
+@@ -261,11 +266,7 @@ SV *line;
+     *lex_casestack = '\0';
+     lex_dojoin = 0;
+     lex_starts = 0;
+-    if (lex_stuff)
+-	SvREFCNT_dec(lex_stuff);
+     lex_stuff = Nullsv;
+-    if (lex_repl)
+-	SvREFCNT_dec(lex_repl);
+     lex_repl = Nullsv;
+     lex_inpat = 0;
+     lex_inwhat = 0;

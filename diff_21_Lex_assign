@@ -1,0 +1,280 @@
+a) Defines new check procedure ck_sassign which may shortcut the
+	target into PADMY.
+ FILES: embed.h global.sym op.c op.h opcode.h opcode.pl
+
+b) Corrects pp_ncmp to put undef via the target;
+ pp.c pp.h
+
+The rest for op.c only:
+
+c) Corrects scalarvoid() mod() list to behave accordingly in the case
+	of ops with shortcut target;
+d) Teaches newBINOP that the OP may be changed during ck_*;
+e) Teaches optimization of OP_STRINGIFY that its target may be shortcut.
+
+diff -ru perl5.003_21/embed.h perl5.003_21.my/embed.h
+--- perl5.003_21/embed.h	Sat Jan 11 10:23:36 1997
++++ perl5.003_21.my/embed.h	Thu Jan 16 02:07:06 1997
+@@ -92,6 +92,7 @@
+ #define ck_retarget		Perl_ck_retarget
+ #define ck_rfun			Perl_ck_rfun
+ #define ck_rvconst		Perl_ck_rvconst
++#define ck_sassign		Perl_ck_sassign
+ #define ck_scmp			Perl_ck_scmp
+ #define ck_select		Perl_ck_select
+ #define ck_shift		Perl_ck_shift
+diff -ru perl5.003_21/global.sym perl5.003_21.my/global.sym
+--- perl5.003_21/global.sym	Sat Jan 11 10:22:44 1997
++++ perl5.003_21.my/global.sym	Thu Jan 16 02:06:40 1997
+@@ -351,6 +351,7 @@
+ ck_retarget
+ ck_rfun
+ ck_rvconst
++ck_sassign
+ ck_scmp
+ ck_select
+ ck_shift
+diff -ru perl5.003_21/op.c perl5.003_21.my/op.c
+--- perl5.003_21/op.c	Wed Jan 15 09:11:08 1997
++++ perl5.003_21.my/op.c	Thu Jan 16 02:56:54 1997
+@@ -657,6 +657,9 @@
+     if (op->op_flags & OPf_LIST)
+ 	return op;
+ 
++    if ((op->op_private & OPpTARGET_MY) && (op->op_type != OP_ENTERSUB))
++	return scalar(op);
++
+     op->op_flags |= OPf_KNOW;
+ 
+     switch (op->op_type) {
+@@ -847,6 +850,9 @@
+ 	 || error_count)
+ 	return op;
+ 
++    if ((op->op_private & OPpTARGET_MY) && (op->op_type != OP_ENTERSUB))
++	return scalar(op);
++
+     op->op_flags |= (OPf_KNOW | OPf_LIST);
+ 
+     switch (op->op_type) {
+@@ -945,6 +951,9 @@
+     if (!op || error_count)
+ 	return op;
+ 
++    if ((op->op_private & OPpTARGET_MY) && (op->op_type != OP_ENTERSUB))
++	return op;
++    
+     switch (op->op_type) {
+     case OP_CONST:
+ 	if (!(op->op_private & (OPpCONST_ARYBASE)))
+@@ -1428,7 +1437,7 @@
+ 
+     if (opargs[type] & OA_RETSCALAR)
+ 	scalar(o);
+-    if (opargs[type] & OA_TARGET)
++    if (opargs[type] & OA_TARGET && !o->op_targ)
+ 	o->op_targ = pad_alloc(type, SVs_PADTMP);
+ 
+     if ((opargs[type] & OA_OTHERINT) && (hints & HINT_INTEGER))
+@@ -1783,7 +1792,7 @@
+     }
+ 
+     binop = (BINOP*)CHECKOP(type, binop);
+-    if (binop->op_next)
++    if (binop->op_next || binop->op_type != type)
+ 	return (OP*)binop;
+ 
+     binop->op_last = last = binop->op_first->op_sibling;
+@@ -3975,6 +3984,77 @@
+ }
+ 
+ OP *
++ck_sassign(op)
++OP *op;
++{
++    OP *kid = cLISTOP->op_first;
++    if ((opargs[kid->op_type] & OA_TARGET)
++	&& !(kid->op_flags & OPf_STACKED)) { /* has a disposable target. */
++	/* Some opcodes do not ALWAYS set target even in scalar context. */
++	OP *kkid = kid->op_sibling;
++	switch (kid->op_type) {
++	case OP_ENTERSUB:		/* Cannot use OPpTARGET_MY. */
++ 	case OP_REF:			/* Will not set if undef. */
++	case OP_UCFIRST:		/* These 4 do not set TARG if
++					   arg is PADTMP. */
++	case OP_LCFIRST:
++	case OP_UC:
++	case OP_LC:
++	case OP_CALLER:			/* Will not set if undef. */
++	case OP_WARN:			/* Will not set ever? */
++	case OP_OPEN:			/* Will not set if undef. */
++	case OP_FILENO:			/* Will not set if undef. */
++#ifndef HAS_SYMLINK
++	case OP_READLINK:		/* Will not set undef. */
++#endif 
++	case OP_SEMCTL:			/* Will not set if undef. */
++	case OP_SHMCTL:			/* Will not set if undef. */
++	case OP_MSGCTL:			/* Will not set if undef. */
++	case OP_GMTIME:			/* Will not set if undef. */
++	case OP_TELLDIR:		/* Will not set if undef. */
++	case OP_ACCEPT:			/* Will not set if undef. */
++	case OP_SHUTDOWN:		/* Will not set if undef. */
++	case OP_IOCTL:			/* Will not set if undef. */
++	case OP_SYSREAD:		/* Will not set if undef. */
++	case OP_RECV:			/* Will not set if undef. */
++	case OP_SYSWRITE:		/* Will not set if undef. */
++	case OP_SEND:			/* Will not set if undef. */
++	case OP_EACH:			/* Will not set if undef. */
++	case OP_POS:			/* Will not set if undef. */
++	case OP_RV2AV:			/* Will not set if undef. */
++	case OP_RV2HV:			/* Will not set if undef. */
++	case OP_BACKTICK:		/* Will not set if undef. */
++	case OP_SPLIT:			/* Will not set often. */
++	    return op;
++	}
++	if (kkid && kkid->op_type == OP_PADSV) { /* Can just relocate the target. */
++	    /* Concat has problems if target is equal to right arg. */
++	    if (kid->op_type == OP_CONCAT
++		&& kLISTOP->op_first->op_sibling->op_type == OP_PADSV
++		&& kLISTOP->op_first->op_sibling->op_targ == kkid->op_targ)
++		return op;
++	    kid->op_targ = kkid->op_targ;
++	    /* Now we do not need PADSV and SASSIGN. */
++	    kid->op_sibling = op->op_sibling;/* NULL */
++	    cLISTOP->op_first = NULL;
++	    op_free(op);
++	    op_free(kkid);
++	    switch (kid->op_type) {
++	    default:
++		kid->op_private |= OPpTARGET_MY; /* Not used. */
++		break;
++	    case OP_PADSV:
++	    case OP_PADAV:
++	    case OP_PADHV:
++		break;
++	    }
++	    return kid;
++	}
++    }
++    return op;
++}
++
++OP *
+ ck_listiob(op)
+ OP *op;
+ {
+@@ -4425,8 +4505,24 @@
+ 	case OP_LC:
+ 	case OP_LCFIRST:
+ 	case OP_QUOTEMETA:
+-	    if (o->op_next->op_type == OP_STRINGIFY)
++	    if (o->op_next->op_type == OP_STRINGIFY) {
++		if (o->op_next->op_private & OPpTARGET_MY) {
++		    if ((o->op_type == OP_CONST) /* no target */
++			|| (o->op_flags & OPf_STACKED) /* chained concats */
++			|| (o->op_type == OP_CONCAT
++	    /* Concat has problems if target is equal to right arg. */
++			    && (((LISTOP*)o)->op_first->op_sibling->op_type
++				== OP_PADSV)
++			    && (((LISTOP*)o)->op_first->op_sibling->op_targ
++				== o->op_next->op_targ))) {
++			goto ignore_optimization;
++		    } else {
++			o->op_targ = o->op_next->op_targ;
++		    }
++		}
+ 		null(o->op_next);
++	    }
++	  ignore_optimization:
+ 	    o->op_seq = op_seqmax++;
+ 	    break;
+ 	case OP_STUB:
+diff -ru perl5.003_21/op.h perl5.003_21.my/op.h
+--- perl5.003_21/op.h	Mon Dec 16 14:35:36 1996
++++ perl5.003_21.my/op.h	Thu Jan 16 02:06:40 1997
+@@ -91,6 +91,10 @@
+ #define OPpDEREF_HV		64	/*   Want ref to HV. */
+ #define OPpDEREF_SV		(32|64)	/*   Want ref to SV. */
+ 
++/* Private for OPs with TARGET except OP_ENTERSUB */
++  /* (lower bits may carry MAXARG) */
++#define OPpTARGET_MY		16	/* Target is PADMY. */
++
+ /* Private for OP_CONST */
+ #define OPpCONST_ENTERED	16	/* Has been entered as symbol. */
+ #define OPpCONST_ARYBASE	32	/* Was a $[ translated to constant. */
+diff -ru perl5.003_21/opcode.h perl5.003_21.my/opcode.h
+--- perl5.003_21/opcode.h	Mon Dec 16 09:36:12 1996
++++ perl5.003_21.my/opcode.h	Thu Jan 16 02:07:06 1997
+@@ -1075,6 +1075,7 @@
+ OP *	ck_require	_((OP* op));
+ OP *	ck_rfun		_((OP* op));
+ OP *	ck_rvconst	_((OP* op));
++OP *	ck_sassign	_((OP* op));
+ OP *	ck_scmp		_((OP* op));
+ OP *	ck_select	_((OP* op));
+ OP *	ck_shift	_((OP* op));
+@@ -1817,7 +1818,7 @@
+ 	ck_null,	/* subst */
+ 	ck_null,	/* substcont */
+ 	ck_null,	/* trans */
+-	ck_null,	/* sassign */
++	ck_sassign,	/* sassign */
+ 	ck_null,	/* aassign */
+ 	ck_spair,	/* chop */
+ 	ck_null,	/* schop */
+diff -ru perl5.003_21/opcode.pl perl5.003_21.my/opcode.pl
+--- perl5.003_21/opcode.pl	Mon Dec 16 09:32:30 1996
++++ perl5.003_21.my/opcode.pl	Thu Jan 16 02:06:40 1997
+@@ -239,7 +239,7 @@
+ 
+ # Lvalue operators.
+ 
+-sassign		scalar assignment	ck_null		s
++sassign		scalar assignment	ck_sassign	s
+ aassign		list assignment		ck_null		t	L L
+ 
+ chop		chop			ck_spair	mts	L
+diff -ru perl5.003_21/pp.c perl5.003_21.my/pp.c
+--- perl5.003_21/pp.c	Mon Jan 13 21:43:58 1997
++++ perl5.003_21.my/pp.c	Thu Jan 16 03:42:36 1997
+@@ -862,7 +862,7 @@
+       else if (left > right)
+ 	value = 1;
+       else {
+-	SETs(&sv_undef);
++	XPUSHundef;
+ 	RETURN;
+       }
+       SETi(value);
+diff -ru perl5.003_21/pp.h perl5.003_21.my/pp.h
+--- perl5.003_21/pp.h	Tue Dec 24 07:50:32 1996
++++ perl5.003_21.my/pp.h	Thu Jan 16 03:38:50 1997
+@@ -90,6 +90,7 @@
+ #define XPUSHn(n)	STMT_START { sv_setnv(TARG, (double)(n)); XPUSHTARG; } STMT_END
+ #define XPUSHi(i)	STMT_START { sv_setiv(TARG, (IV)(i)); XPUSHTARG; } STMT_END
+ #define XPUSHu(u)	STMT_START { sv_setuv(TARG, (UV)(u)); XPUSHTARG; } STMT_END
++#define XPUSHundef	STMT_START { SvOK_off(TARG); XPUSHs(TARG); } STMT_END
+ 
+ #define SETs(s)		(*sp = s)
+ #define SETTARG		STMT_START { SvSETMAGIC(TARG); SETs(TARG); } STMT_END
+@@ -143,7 +144,8 @@
+ #define RETSETUNDEF	RETURNX(SETs(&sv_undef))
+ 
+ #define ARGTARG		op->op_targ
+-#define MAXARG		op->op_private
++    /* See OPpTARGET_MY: */
++#define MAXARG		(op->op_private & 15)
+ 
+ #define SWITCHSTACK(f,t)	AvFILL(f) = sp - stack_base;		\
+ 				stack_base = AvARRAY(t);		\
+@@ -202,7 +204,8 @@
+ 
+ #define opASSIGN (op->op_flags & OPf_STACKED)
+ #define SETsv(sv)	STMT_START {					\
+-		if (opASSIGN) { sv_setsv(TARG, (sv)); SETTARG; }	\
++		if (opASSIGN || (SvFLAGS(TARG) & SVs_PADMY))		\
++		   { sv_setsv(TARG, (sv)); SETTARG; }			\
+ 		else SETs(sv); } STMT_END
+ 
+ /* newSVsv does not behave as advertised, so we copy missing

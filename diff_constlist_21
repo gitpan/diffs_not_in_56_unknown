@@ -1,0 +1,30 @@
+--- op.h~	Thu Jan 16 02:06:40 1997
++++ op.h	Tue Jan 21 01:44:18 1997
+@@ -64,6 +64,7 @@
+ 				/*  On UNOPs, saw bare parens, e.g. eof(). */
+ 				/*  On OP_ENTERSUB || OP_NULL, saw a "do". */
+ 				/*  On OP_(ENTER|LEAVE)EVAL, don't clear $@ */
++				/*  On OP_RV2AV: constant-folded array. */
+ 
+ /* Private for lvalues */
+ #define OPpLVAL_INTRO	128	/* Lvalue must be localized */
+--- op.c~	Thu Jan 16 02:56:54 1997
++++ op.c	Tue Jan 21 01:46:22 1997
+@@ -1531,6 +1531,7 @@
+ 
+     o->op_type = OP_RV2AV;
+     o->op_ppaddr = ppaddr[OP_RV2AV];
++    o->op_flags |= OPf_SPECIAL;
+     curop = ((UNOP*)o)->op_first;
+     ((UNOP*)o)->op_first = newSVOP(OP_CONST, 0, SvREFCNT_inc(*stack_sp--));
+     op_free(curop);
+@@ -2287,7 +2288,8 @@
+ 			     curop->op_type == OP_RV2AV ||
+ 			     curop->op_type == OP_RV2HV ||
+ 			     curop->op_type == OP_RV2GV) {
+-			if (lastop->op_type != OP_GV)	/* funny deref? */
++			if (lastop->op_type != OP_GV	/* funny deref? */
++			    && !(curop->op_flags & OPf_SPECIAL)) /* const? */
+ 			    break;
+ 		    }
+ 		    else
